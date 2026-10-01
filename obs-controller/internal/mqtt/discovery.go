@@ -11,6 +11,7 @@ type Origin struct {
 // DeviceInfo identifies one OBS connection in the HA device registry.
 type DeviceInfo struct {
 	ID         string
+	Name       string
 	OBSVersion string
 	Platform   string
 }
@@ -71,28 +72,6 @@ func selectFields(state, set string) func(DeviceTopics, []string) map[string]any
 	}
 }
 
-func sensorEntity(object, name, category, icon, unit, deviceClass string, precision *int) entity {
-	return entity{
-		component: "sensor", object: object, name: name, category: category, icon: icon,
-		fields: func(t DeviceTopics, _ []string) map[string]any {
-			fields := map[string]any{"state_topic": t.SensorState(object)}
-			if unit != "" {
-				fields["unit_of_measurement"] = unit
-				fields["state_class"] = "measurement"
-			}
-			if deviceClass != "" {
-				fields["device_class"] = deviceClass
-			}
-			if precision != nil {
-				fields["suggested_display_precision"] = *precision
-			}
-			return fields
-		},
-	}
-}
-
-func intPtr(v int) *int { return &v }
-
 func entities() []entity {
 	return []entity{
 		{component: "switch", object: "stream", name: "Stream", icon: "mdi:broadcast",
@@ -152,18 +131,27 @@ func entities() []entity {
 					"payload_off":  PayloadOff,
 				}
 			}},
-		sensorEntity("stream_duration", "Stream duration", "", "mdi:timer-outline", "s", "duration", nil),
-		sensorEntity("stream_congestion", "Stream congestion", "", "mdi:signal-variant", "%", "", intPtr(1)),
-		sensorEntity("stream_dropped_pct", "Stream dropped frames", "", "mdi:filmstrip-off", "%", "", intPtr(2)),
-		sensorEntity("record_duration", "Record duration", "", "mdi:timer-outline", "s", "duration", nil),
-		sensorEntity("last_recording_path", "Last recording", "", "mdi:file-video", "", "", nil),
-		sensorEntity("cpu_usage", "CPU usage", "diagnostic", "mdi:cpu-64-bit", "%", "", intPtr(1)),
-		sensorEntity("memory_usage", "Memory usage", "diagnostic", "mdi:memory", "MB", "data_size", intPtr(0)),
-		sensorEntity("active_fps", "Active FPS", "diagnostic", "mdi:video-outline", "fps", "", intPtr(1)),
-		sensorEntity("render_lag_pct", "Render lag", "diagnostic", "mdi:speedometer-slow", "%", "", intPtr(2)),
-		sensorEntity("encode_lag_pct", "Encode lag", "diagnostic", "mdi:speedometer-slow", "%", "", intPtr(2)),
-		sensorEntity("free_disk_space", "Free disk space", "diagnostic", "mdi:harddisk", "GB", "data_size", intPtr(1)),
+		{component: "sensor", object: "last_recording_path", name: "Last recording", icon: "mdi:file-video",
+			fields: func(t DeviceTopics, _ []string) map[string]any {
+				return map[string]any{"state_topic": t.SensorState("last_recording_path")}
+			}},
 	}
+}
+
+// retiredSensors are sensor entities earlier releases published; their retained
+// discovery configs are cleared so stale entities never linger in Home Assistant.
+var retiredSensors = []string{
+	"stream_duration", "stream_congestion", "stream_dropped_pct", "record_duration",
+	"cpu_usage", "memory_usage", "active_fps", "render_lag_pct", "encode_lag_pct", "free_disk_space",
+}
+
+// RetiredDiscoveryTopics lists config topics to clear for one connection id.
+func RetiredDiscoveryTopics(id string) []string {
+	topics := make([]string, 0, len(retiredSensors))
+	for _, object := range retiredSensors {
+		topics = append(topics, HADiscoveryTopic("sensor", DeviceNodeID(id), object))
+	}
+	return topics
 }
 
 var (
@@ -252,9 +240,13 @@ func bridgeAvailability() map[string]any {
 }
 
 func device(info DeviceInfo) map[string]any {
+	name := info.Name
+	if name == "" {
+		name = "OBS " + info.ID
+	}
 	d := map[string]any{
 		"identifiers":  []string{DeviceIdentifier(info.ID)},
-		"name":         "OBS " + info.ID,
+		"name":         name,
 		"manufacturer": "OBS Project",
 		"model":        "OBS Studio",
 	}

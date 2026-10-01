@@ -17,9 +17,11 @@ import (
 	"time"
 )
 
-// Connection is one configured OBS instance.
+// Connection is one configured OBS instance. Name is the Home Assistant device name;
+// ID is the stable identity every MQTT topic and unique_id derives from.
 type Connection struct {
 	ID       string
+	Name     string
 	Host     string
 	Port     int
 	Password string
@@ -42,8 +44,6 @@ func (c Connection) LogValue() slog.Value {
 // Options are the validated add-on options.
 type Options struct {
 	Connections       []Connection
-	PollActive        time.Duration
-	PollIdle          time.Duration
 	ScreenshotActive  time.Duration
 	ScreenshotIdle    time.Duration
 	ScreenshotWidth   int
@@ -86,6 +86,7 @@ type Config struct {
 }
 
 type rawConnection struct {
+	Name     string `json:"name"`
 	ID       string `json:"id"`
 	Host     string `json:"host"`
 	Port     *int   `json:"port"`
@@ -94,8 +95,6 @@ type rawConnection struct {
 
 type rawOptions struct {
 	Connections       []rawConnection `json:"connections"`
-	PollActiveSecs    *int            `json:"poll_interval_active_seconds"`
-	PollIdleSecs      *int            `json:"poll_interval_idle_seconds"`
 	ShotActiveSecs    *int            `json:"screenshot_interval_active_seconds"`
 	ShotIdleSecs      *int            `json:"screenshot_interval_idle_seconds"`
 	ScreenshotWidth   *int            `json:"screenshot_width"`
@@ -115,8 +114,6 @@ func ParseOptions(data []byte) (Options, error) {
 		return Options{}, errors.New("connections: configure at least one OBS connection")
 	}
 	opts := Options{
-		PollActive:        5 * time.Second,
-		PollIdle:          30 * time.Second,
 		ScreenshotActive:  2 * time.Second,
 		ScreenshotIdle:    10 * time.Second,
 		ScreenshotWidth:   640,
@@ -130,7 +127,7 @@ func ParseOptions(data []byte) (Options, error) {
 			return Options{}, fmt.Errorf("connections[%d]: %w", i, err)
 		}
 		if seen[conn.ID] {
-			return Options{}, fmt.Errorf("connections: duplicate id %q", conn.ID)
+			return Options{}, fmt.Errorf("connections: duplicate id %q (ids derive from names unless set explicitly)", conn.ID)
 		}
 		seen[conn.ID] = true
 		opts.Connections = append(opts.Connections, conn)
@@ -140,8 +137,6 @@ func ParseOptions(data []byte) (Options, error) {
 		raw  *int
 		dst  *time.Duration
 	}{
-		{"poll_interval_active_seconds", raw.PollActiveSecs, &opts.PollActive},
-		{"poll_interval_idle_seconds", raw.PollIdleSecs, &opts.PollIdle},
 		{"screenshot_interval_active_seconds", raw.ShotActiveSecs, &opts.ScreenshotActive},
 		{"screenshot_interval_idle_seconds", raw.ShotIdleSecs, &opts.ScreenshotIdle},
 	}
@@ -175,13 +170,24 @@ func ParseOptions(data []byte) (Options, error) {
 }
 
 func parseConnection(rc rawConnection) (Connection, error) {
-	if !idPattern.MatchString(rc.ID) {
-		return Connection{}, fmt.Errorf("id %q must match %s", rc.ID, idPattern)
+	name := strings.TrimSpace(rc.Name)
+	if name == "" {
+		return Connection{}, errors.New("name is required")
+	}
+	id := rc.ID
+	if id == "" {
+		id = Slugify(name)
+		if id == "" {
+			return Connection{}, fmt.Errorf("name %q yields an empty id; set id explicitly", name)
+		}
+	}
+	if !idPattern.MatchString(id) {
+		return Connection{}, fmt.Errorf("id %q must match %s", id, idPattern)
 	}
 	if strings.TrimSpace(rc.Host) == "" {
 		return Connection{}, errors.New("host is required")
 	}
-	conn := Connection{ID: rc.ID, Host: strings.TrimSpace(rc.Host), Port: 4455, Password: rc.Password}
+	conn := Connection{ID: id, Name: name, Host: strings.TrimSpace(rc.Host), Port: 4455, Password: rc.Password}
 	if rc.Port != nil {
 		if v := *rc.Port; v < 1 || v > 65535 {
 			return Connection{}, fmt.Errorf("port %d is not a valid port", v)
@@ -189,6 +195,32 @@ func parseConnection(rc rawConnection) (Connection, error) {
 		conn.Port = *rc.Port
 	}
 	return conn, nil
+}
+
+const maxIDLength = 32
+
+// Slugify derives a connection id from a display name: lowercased, runs of anything
+// outside [a-z0-9] become single underscores, trimmed to the id length limit.
+func Slugify(name string) string {
+	var b strings.Builder
+	underscore := false
+	for _, r := range strings.ToLower(name) {
+		switch {
+		case (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9'):
+			if underscore && b.Len() > 0 {
+				b.WriteByte('_')
+			}
+			underscore = false
+			b.WriteRune(r)
+		default:
+			underscore = true
+		}
+	}
+	slug := b.String()
+	if len(slug) > maxIDLength {
+		slug = strings.Trim(slug[:maxIDLength], "_")
+	}
+	return slug
 }
 
 // MQTTFromEnv reads MQTT_HOST, MQTT_PORT, MQTT_USERNAME, MQTT_PASSWORD and MQTT_SSL.

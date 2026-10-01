@@ -7,7 +7,7 @@ import (
 )
 
 var (
-	testInfo   = DeviceInfo{ID: "main_obs", OBSVersion: "31.0.0", Platform: "windows"}
+	testInfo   = DeviceInfo{ID: "main_obs", Name: "Main OBS", OBSVersion: "31.0.0", Platform: "windows"}
 	testOrigin = Origin{Version: "0.1.0", SupportURL: "https://example.test"}
 )
 
@@ -34,7 +34,7 @@ func TestDeviceMessages(t *testing.T) {
 		}
 		seenUniqueIDs[uid] = true
 		device, _ := payload["device"].(map[string]any)
-		if device == nil || device["name"] != "OBS main_obs" || device["sw_version"] != "31.0.0" {
+		if device == nil || device["name"] != "Main OBS" || device["sw_version"] != "31.0.0" {
 			t.Errorf("device block for %s = %v", msg.Topic, device)
 		}
 		if payload["origin"] == nil {

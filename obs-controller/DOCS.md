@@ -20,8 +20,6 @@ connections:
     host: 192.168.1.50
     port: 4455
     password: secret
-poll_interval_active_seconds: 5
-poll_interval_idle_seconds: 30
 screenshot_interval_active_seconds: 2
 screenshot_interval_idle_seconds: 10
 screenshot_width: 640
@@ -32,12 +30,11 @@ log_level: info
 | Option | Default | Meaning |
 | --- | --- | --- |
 | `connections` | required | One entry per OBS instance. |
-| `connections[].id` | required | Stable slug (`a-z`, `0-9`, `_`, max 32). All MQTT topics and Home Assistant entity IDs derive from it — renaming it orphans entity history. Must be unique. |
+| `connections[].name` | required | Home Assistant device name, free-form. |
+| `connections[].id` | slugified name | Stable slug (`a-z`, `0-9`, `_`, max 32) that all MQTT topics and Home Assistant entity IDs derive from. Changing the effective id orphans entity history — pin `id` explicitly before renaming a connection if history matters. Must be unique. |
 | `connections[].host` | required | Hostname or IP of the machine running OBS. |
 | `connections[].port` | `4455` | obs-websocket server port. |
 | `connections[].password` | none | obs-websocket password, if authentication is enabled. |
-| `poll_interval_active_seconds` | `5` | Sensor poll interval while streaming or recording. |
-| `poll_interval_idle_seconds` | `30` | Sensor poll interval otherwise. |
 | `screenshot_interval_active_seconds` | `2` | Program preview refresh while streaming or recording. |
 | `screenshot_interval_idle_seconds` | `10` | Program preview refresh otherwise. |
 | `screenshot_width` | `640` | Preview width in pixels; height follows the OBS canvas aspect ratio. OBS does the scaling. |
@@ -61,13 +58,11 @@ Each connection is one device named **OBS `<id>`**:
 | Trigger transition | button | Studio-mode transition (preview → program). |
 | Program | camera | Still of the current program scene, refreshed on the screenshot interval. |
 | Connected | binary sensor | OBS reachable from the add-on; stays available while OBS is down so automations can trigger on it. |
-| Stream duration / congestion / dropped frames | sensors | |
-| Record duration / Last recording | sensors | |
-| CPU, Memory, FPS, Render lag, Encode lag, Free disk | diagnostic sensors | From OBS's own stats. |
+| Last recording | sensor | File path of the most recently finished recording. |
 
 ## Behaviour
 
-- State changes arrive as obs-websocket events and are published immediately; numeric sensors are polled on the active/idle intervals.
+- State changes arrive as obs-websocket events and are published immediately; the only polling is the program preview screenshot on its active/idle interval.
 - When an OBS instance is unreachable its entities go unavailable in Home Assistant, and the add-on reconnects forever with exponential backoff (1–30 s). Commands received while disconnected are dropped and logged — never queued.
 - A wrong password is retried once a minute and logged as `obs_auth_failed`; fix the password in OBS's WebSocket Server Settings and the add-on recovers on its own. Config changes on the add-on side require a restart.
 - Retained MQTT messages on command topics are never acted on.

@@ -10,14 +10,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/andreykaipov/goobs"
-	"github.com/andreykaipov/goobs/api/closecodes"
-	"github.com/andreykaipov/goobs/api/events"
-	"github.com/andreykaipov/goobs/api/events/subscriptions"
-	"github.com/andreykaipov/goobs/api/typedefs"
-	"github.com/gorilla/websocket"
 	"github.com/jacobgad/obs-controller/internal/config"
 	"github.com/jacobgad/obs-controller/internal/mqtt"
+	"github.com/jacobgad/obs-controller/internal/obs"
 )
 
 const (
@@ -56,7 +51,7 @@ type connection struct {
 	topics mqtt.DeviceTopics
 
 	mu     sync.Mutex
-	client *goobs.Client
+	client *obs.Client
 	st     obsState
 }
 
@@ -75,9 +70,9 @@ func (c *connection) run(ctx context.Context) {
 	c.publishDown(ctx)
 	backoff := initialBackoff
 	for ctx.Err() == nil {
-		client, err := c.dial()
+		client, err := c.dial(ctx)
 		if err != nil {
-			if isAuthFailure(err) {
+			if errors.Is(err, obs.ErrAuthFailed) {
 				c.log.Error("obs_auth_failed", "host", c.cfg.Host, "port", c.cfg.Port,
 					"detail", "check the obs-websocket password for this connection")
 				sleepCtx(ctx, authRetryDelay)
@@ -91,7 +86,7 @@ func (c *connection) run(ctx context.Context) {
 		backoff = initialBackoff
 		if err := c.onUp(ctx, client); err != nil {
 			c.log.Warn("obs_init_failed", "error", err.Error())
-			_ = client.Disconnect()
+			_ = client.Close()
 			sleepCtx(ctx, jitter(backoff))
 			continue
 		}
@@ -100,28 +95,19 @@ func (c *connection) run(ctx context.Context) {
 	}
 }
 
-func (c *connection) dial() (*goobs.Client, error) {
-	dialer := *websocket.DefaultDialer
-	dialer.HandshakeTimeout = handshakeTimeout
-	opts := []goobs.Option{
-		goobs.WithDialer(&dialer),
-		goobs.WithEventSubscriptions(subscriptions.General | subscriptions.Config |
-			subscriptions.Scenes | subscriptions.Transitions | subscriptions.Outputs | subscriptions.Ui),
-	}
-	if c.cfg.Password != "" {
-		opts = append(opts, goobs.WithPassword(c.cfg.Password))
-	}
-	return goobs.New(c.cfg.Addr(), opts...)
+func (c *connection) dial(ctx context.Context) (*obs.Client, error) {
+	return obs.Dial(ctx, obs.Options{
+		Addr:             c.cfg.Addr(),
+		Password:         c.cfg.Password,
+		HandshakeTimeout: handshakeTimeout,
+		EventSubscriptions: obs.SubGeneral | obs.SubConfig | obs.SubScenes |
+			obs.SubTransitions | obs.SubOutputs | obs.SubUI,
+	})
 }
 
-func isAuthFailure(err error) bool {
-	var closeErr *websocket.CloseError
-	return errors.As(err, &closeErr) && closeErr.Code == closecodes.AuthenticationFailed
-}
-
-func (c *connection) onUp(ctx context.Context, client *goobs.Client) error {
+func (c *connection) onUp(ctx context.Context, client *obs.Client) error {
 	st := obsState{}
-	version, err := client.General.GetVersion()
+	version, err := client.GetVersion(ctx)
 	if err != nil {
 		return err
 	}
@@ -132,13 +118,13 @@ func (c *connection) onUp(ctx context.Context, client *goobs.Client) error {
 		c.log.Warn("obs_websocket_version_unsupported", "version", version.ObsWebSocketVersion, "minimum", "5.0.0")
 	}
 
-	video, err := client.Config.GetVideoSettings()
+	video, err := client.GetVideoSettings(ctx)
 	if err != nil {
 		return err
 	}
 	st.canvasWidth, st.canvasHeight = video.BaseWidth, video.BaseHeight
 
-	sceneList, err := client.Scenes.GetSceneList()
+	sceneList, err := client.GetSceneList(ctx)
 	if err != nil {
 		return err
 	}
@@ -146,32 +132,32 @@ func (c *connection) onUp(ctx context.Context, client *goobs.Client) error {
 	st.programScene = sceneList.CurrentProgramSceneName
 	st.previewScene = sceneList.CurrentPreviewSceneName
 
-	transitionList, err := client.Transitions.GetSceneTransitionList()
+	transitionList, err := client.GetSceneTransitionList(ctx)
 	if err != nil {
 		return err
 	}
 	st.transitions = transitionNames(transitionList.Transitions)
 	st.transition = transitionList.CurrentSceneTransitionName
 
-	current, err := client.Transitions.GetCurrentSceneTransition()
+	current, err := client.GetCurrentSceneTransition(ctx)
 	if err != nil {
 		return err
 	}
 	st.durationMs = int(current.TransitionDuration)
 
-	studio, err := client.Ui.GetStudioModeEnabled()
+	studio, err := client.GetStudioModeEnabled(ctx)
 	if err != nil {
 		return err
 	}
 	st.studioMode = studio.StudioModeEnabled
 
-	stream, err := client.Stream.GetStreamStatus()
+	stream, err := client.GetStreamStatus(ctx)
 	if err != nil {
 		return err
 	}
 	st.streaming = stream.OutputActive
 
-	record, err := client.Record.GetRecordStatus()
+	record, err := client.GetRecordStatus(ctx)
 	if err != nil {
 		return err
 	}
@@ -189,27 +175,22 @@ func (c *connection) onUp(ctx context.Context, client *goobs.Client) error {
 	return nil
 }
 
-func (c *connection) loop(ctx context.Context, client *goobs.Client) {
+func (c *connection) loop(ctx context.Context, client *obs.Client) {
 	ticker := time.NewTicker(time.Second)
 	defer ticker.Stop()
-	lastPoll, lastShot := time.Now(), time.Now()
+	lastShot := time.Now()
 	for {
 		select {
 		case <-ctx.Done():
-			_ = client.Disconnect()
+			_ = client.Close()
 			return
-		case ev, ok := <-client.IncomingEvents:
+		case ev, ok := <-client.Events():
 			if !ok {
 				return
 			}
 			c.handleEvent(ctx, ev)
 		case now := <-ticker.C:
-			active := c.active()
-			if now.Sub(lastPoll) >= interval(active, c.opts.PollActive, c.opts.PollIdle) {
-				lastPoll = now
-				c.pollSensors(ctx)
-			}
-			if now.Sub(lastShot) >= interval(active, c.opts.ScreenshotActive, c.opts.ScreenshotIdle) {
+			if now.Sub(lastShot) >= interval(c.active(), c.opts.ScreenshotActive, c.opts.ScreenshotIdle) {
 				lastShot = now
 				c.publishScreenshot(ctx)
 			}
@@ -227,37 +208,36 @@ func (c *connection) onDown(ctx context.Context) {
 
 func (c *connection) handleEvent(ctx context.Context, ev any) {
 	switch e := ev.(type) {
-	case *events.StreamStateChanged:
+	case *obs.StreamStateChanged:
 		c.update(func(st *obsState) { st.streaming = e.OutputActive })
 		c.pub(ctx, c.topics.StreamState, onOff(e.OutputActive))
-		c.pollSensors(ctx)
-	case *events.RecordStateChanged:
+	case *obs.RecordStateChanged:
 		c.handleRecordState(ctx, e)
-	case *events.CurrentProgramSceneChanged:
+	case *obs.CurrentProgramSceneChanged:
 		c.update(func(st *obsState) { st.programScene = e.SceneName })
 		c.pub(ctx, c.topics.ProgramSceneState, e.SceneName)
 		c.publishScreenshot(ctx)
-	case *events.CurrentPreviewSceneChanged:
+	case *obs.CurrentPreviewSceneChanged:
 		c.update(func(st *obsState) { st.previewScene = e.SceneName })
 		c.pub(ctx, c.topics.PreviewSceneState, e.SceneName)
-	case *events.SceneListChanged:
+	case *obs.SceneListChanged:
 		c.update(func(st *obsState) { st.scenes = sceneNames(e.Scenes) })
 		c.publishSceneSelects(ctx)
-	case *events.SceneNameChanged:
+	case *obs.SceneNameChanged:
 		c.handleSceneRenamed(ctx, e)
-	case *events.StudioModeStateChanged:
+	case *obs.StudioModeStateChanged:
 		c.handleStudioMode(ctx, e)
-	case *events.CurrentSceneTransitionChanged:
+	case *obs.CurrentSceneTransitionChanged:
 		c.handleTransitionChanged(ctx, e)
-	case *events.CurrentSceneTransitionDurationChanged:
+	case *obs.CurrentSceneTransitionDurationChanged:
 		c.update(func(st *obsState) { st.durationMs = int(e.TransitionDuration) })
 		c.pub(ctx, c.topics.TransitionDurationState, strconv.Itoa(int(e.TransitionDuration)))
-	case *events.ExitStarted:
+	case *obs.ExitStarted:
 		c.log.Info("obs_exiting")
 	}
 }
 
-func (c *connection) handleRecordState(ctx context.Context, e *events.RecordStateChanged) {
+func (c *connection) handleRecordState(ctx context.Context, e *obs.RecordStateChanged) {
 	switch e.OutputState {
 	case "OBS_WEBSOCKET_OUTPUT_STARTED":
 		c.update(func(st *obsState) { st.recording, st.recordPaused = true, false })
@@ -278,7 +258,7 @@ func (c *connection) handleRecordState(ctx context.Context, e *events.RecordStat
 	c.pub(ctx, c.topics.RecordPausedState, onOff(st.recordPaused))
 }
 
-func (c *connection) handleSceneRenamed(ctx context.Context, e *events.SceneNameChanged) {
+func (c *connection) handleSceneRenamed(ctx context.Context, e *obs.SceneNameChanged) {
 	c.update(func(st *obsState) {
 		if st.programScene == e.OldSceneName {
 			st.programScene = e.SceneName
@@ -292,11 +272,11 @@ func (c *connection) handleSceneRenamed(ctx context.Context, e *events.SceneName
 	c.pub(ctx, c.topics.PreviewSceneState, st.previewScene)
 }
 
-func (c *connection) handleStudioMode(ctx context.Context, e *events.StudioModeStateChanged) {
+func (c *connection) handleStudioMode(ctx context.Context, e *obs.StudioModeStateChanged) {
 	preview := ""
 	if e.StudioModeEnabled {
 		if client := c.snapshotClient(); client != nil {
-			if resp, err := client.Scenes.GetCurrentPreviewScene(); err == nil {
+			if resp, err := client.GetCurrentPreviewScene(ctx); err == nil {
 				preview = resp.CurrentPreviewSceneName
 			}
 		}
@@ -309,12 +289,12 @@ func (c *connection) handleStudioMode(ctx context.Context, e *events.StudioModeS
 	c.pub(ctx, c.topics.PreviewSceneState, preview)
 }
 
-func (c *connection) handleTransitionChanged(ctx context.Context, e *events.CurrentSceneTransitionChanged) {
+func (c *connection) handleTransitionChanged(ctx context.Context, e *obs.CurrentSceneTransitionChanged) {
 	c.update(func(st *obsState) { st.transition = e.TransitionName })
 	st := c.snapshotState()
 	if !contains(st.transitions, e.TransitionName) {
 		if client := c.snapshotClient(); client != nil {
-			if resp, err := client.Transitions.GetSceneTransitionList(); err == nil {
+			if resp, err := client.GetSceneTransitionList(ctx); err == nil {
 				c.update(func(st *obsState) { st.transitions = transitionNames(resp.Transitions) })
 				c.publishTransitionSelect(ctx)
 			}
@@ -338,7 +318,7 @@ func (c *connection) snapshotState() obsState {
 	return st
 }
 
-func (c *connection) snapshotClient() *goobs.Client {
+func (c *connection) snapshotClient() *obs.Client {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return c.client
@@ -357,7 +337,7 @@ func interval(active bool, activeInterval, idleInterval time.Duration) time.Dura
 	return idleInterval
 }
 
-func sceneNames(scenes []*typedefs.Scene) []string {
+func sceneNames(scenes []obs.Scene) []string {
 	names := make([]string, 0, len(scenes))
 	// OBS lists scenes bottom-up; reversing matches the order shown in the OBS UI.
 	for i := len(scenes) - 1; i >= 0; i-- {
@@ -366,7 +346,7 @@ func sceneNames(scenes []*typedefs.Scene) []string {
 	return names
 }
 
-func transitionNames(transitions []*typedefs.Transition) []string {
+func transitionNames(transitions []obs.Transition) []string {
 	names := make([]string, 0, len(transitions))
 	for _, t := range transitions {
 		names = append(names, t.TransitionName)

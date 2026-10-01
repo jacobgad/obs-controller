@@ -90,7 +90,7 @@ func (b *Bridge) route(topic string, payload []byte) {
 		b.deps.Log.Warn("command_for_unknown_connection", "topic", topic)
 		return
 	}
-	go conn.handleCommand(cmd.Object, payload)
+	go conn.handleCommand(context.Background(), cmd.Object, payload)
 }
 
 // Stop halts the connection loops and marks everything offline before the broker

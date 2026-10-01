@@ -4,14 +4,14 @@ import (
 	"testing"
 	"time"
 
-	"github.com/andreykaipov/goobs/api/typedefs"
+	"github.com/jacobgad/obs-controller/internal/obs"
 )
 
 func TestSceneNamesReversesToUIOrder(t *testing.T) {
-	scenes := []*typedefs.Scene{
-		{SceneName: "Bottom", SceneIndex: 0},
-		{SceneName: "Middle", SceneIndex: 1},
-		{SceneName: "Top", SceneIndex: 2},
+	scenes := []obs.Scene{
+		{SceneName: "Bottom"},
+		{SceneName: "Middle"},
+		{SceneName: "Top"},
 	}
 	got := sceneNames(scenes)
 	want := []string{"Top", "Middle", "Bottom"}
@@ -45,15 +45,6 @@ func TestWSMajorVersion(t *testing.T) {
 		if got := wsMajorVersion(in); got != want {
 			t.Errorf("wsMajorVersion(%q) = %d, want %d", in, got, want)
 		}
-	}
-}
-
-func TestPercent(t *testing.T) {
-	if got := percent(5, 200); got != 2.5 {
-		t.Errorf("percent(5, 200) = %v", got)
-	}
-	if got := percent(5, 0); got != 0 {
-		t.Errorf("percent(5, 0) = %v", got)
 	}
 }
 
