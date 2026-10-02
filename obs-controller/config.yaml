@@ -1,5 +1,5 @@
 name: OBS Controller
-version: "0.2.0"
+version: "1.0.0"
 slug: obs_controller
 description: MQTT bridge exposing OBS Studio instances as Home Assistant devices via obs-websocket
 url: https://github.com/jacobgad/obs-controller
@@ -8,10 +8,14 @@ arch:
   - amd64
 services:
   - mqtt:need
+ports:
+  9981/tcp: 9981
+ports_description:
+  9981/tcp: MJPEG program previews (http://<host>:9981/stream/<id>)
 options:
   connections: []
-  screenshot_interval_active_seconds: 2
-  screenshot_interval_idle_seconds: 10
+  active_screenshot_polling_interval_ms: 125
+  idle_screenshot_polling_interval_ms: 10000
   screenshot_width: 640
   screenshot_quality: 60
   log_level: info
@@ -22,8 +26,8 @@ schema:
       host: str
       port: port?
       password: password?
-  screenshot_interval_active_seconds: int(1,3600)
-  screenshot_interval_idle_seconds: int(1,3600)
+  active_screenshot_polling_interval_ms: int(50,5000)
+  idle_screenshot_polling_interval_ms: int(500,3600000)
   screenshot_width: int(8,4096)
   screenshot_quality: int(0,100)
   log_level: list(debug|info|warn|error)

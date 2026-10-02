@@ -43,12 +43,12 @@ func (c Connection) LogValue() slog.Value {
 
 // Options are the validated add-on options.
 type Options struct {
-	Connections       []Connection
-	ScreenshotActive  time.Duration
-	ScreenshotIdle    time.Duration
-	ScreenshotWidth   int
-	ScreenshotQuality int
-	LogLevel          slog.Level
+	Connections        []Connection
+	ActivePollInterval time.Duration
+	IdlePollInterval   time.Duration
+	ScreenshotWidth    int
+	ScreenshotQuality  int
+	LogLevel           slog.Level
 }
 
 // MQTT is how to reach the broker.
@@ -95,8 +95,8 @@ type rawConnection struct {
 
 type rawOptions struct {
 	Connections       []rawConnection `json:"connections"`
-	ShotActiveSecs    *int            `json:"screenshot_interval_active_seconds"`
-	ShotIdleSecs      *int            `json:"screenshot_interval_idle_seconds"`
+	ActivePollMs      *int            `json:"active_screenshot_polling_interval_ms"`
+	IdlePollMs        *int            `json:"idle_screenshot_polling_interval_ms"`
 	ScreenshotWidth   *int            `json:"screenshot_width"`
 	ScreenshotQuality *int            `json:"screenshot_quality"`
 	LogLevel          *string         `json:"log_level"`
@@ -114,11 +114,11 @@ func ParseOptions(data []byte) (Options, error) {
 		return Options{}, errors.New("connections: configure at least one OBS connection")
 	}
 	opts := Options{
-		ScreenshotActive:  2 * time.Second,
-		ScreenshotIdle:    10 * time.Second,
-		ScreenshotWidth:   640,
-		ScreenshotQuality: 60,
-		LogLevel:          slog.LevelInfo,
+		ActivePollInterval: 125 * time.Millisecond,
+		IdlePollInterval:   10 * time.Second,
+		ScreenshotWidth:    640,
+		ScreenshotQuality:  60,
+		LogLevel:           slog.LevelInfo,
 	}
 	seen := map[string]bool{}
 	for i, rc := range raw.Connections {
@@ -132,22 +132,17 @@ func ParseOptions(data []byte) (Options, error) {
 		seen[conn.ID] = true
 		opts.Connections = append(opts.Connections, conn)
 	}
-	intervals := []struct {
-		name string
-		raw  *int
-		dst  *time.Duration
-	}{
-		{"screenshot_interval_active_seconds", raw.ShotActiveSecs, &opts.ScreenshotActive},
-		{"screenshot_interval_idle_seconds", raw.ShotIdleSecs, &opts.ScreenshotIdle},
+	if raw.ActivePollMs != nil {
+		if v := *raw.ActivePollMs; v < 50 || v > 5000 {
+			return Options{}, errors.New("active_screenshot_polling_interval_ms must be between 50 and 5000")
+		}
+		opts.ActivePollInterval = time.Duration(*raw.ActivePollMs) * time.Millisecond
 	}
-	for _, iv := range intervals {
-		if iv.raw == nil {
-			continue
+	if raw.IdlePollMs != nil {
+		if v := *raw.IdlePollMs; v < 500 || v > 3600000 {
+			return Options{}, errors.New("idle_screenshot_polling_interval_ms must be between 500 and 3600000")
 		}
-		if v := *iv.raw; v < 1 || v > 3600 {
-			return Options{}, fmt.Errorf("%s must be between 1 and 3600", iv.name)
-		}
-		*iv.dst = time.Duration(*iv.raw) * time.Second
+		opts.IdlePollInterval = time.Duration(*raw.IdlePollMs) * time.Millisecond
 	}
 	if raw.ScreenshotWidth != nil {
 		if v := *raw.ScreenshotWidth; v < 8 || v > 4096 {

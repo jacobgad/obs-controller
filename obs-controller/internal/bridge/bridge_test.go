@@ -45,7 +45,7 @@ func newOBSServer(t *testing.T) *obstest.Server {
 	return srv
 }
 
-func startBridge(t *testing.T, srv *obstest.Server, broker *testutil.FakeMQTT) {
+func startBridge(t *testing.T, srv *obstest.Server, broker *testutil.FakeMQTT) *bridge.Bridge {
 	t.Helper()
 	host, portText, err := net.SplitHostPort(srv.Addr())
 	if err != nil {
@@ -53,16 +53,17 @@ func startBridge(t *testing.T, srv *obstest.Server, broker *testutil.FakeMQTT) {
 	}
 	port, _ := strconv.Atoi(portText)
 	opts := config.Options{
-		Connections:      []config.Connection{{ID: "test", Name: "Test OBS", Host: host, Port: port, Password: "pw"}},
-		ScreenshotActive: time.Hour,
-		ScreenshotIdle:   time.Hour,
-		ScreenshotWidth:  640, ScreenshotQuality: 60,
+		Connections:        []config.Connection{{ID: "test", Name: "Test OBS", Host: host, Port: port, Password: "pw"}},
+		ActivePollInterval: 50 * time.Millisecond,
+		IdlePollInterval:   time.Hour,
+		ScreenshotWidth:    640, ScreenshotQuality: 60,
 	}
 	b := bridge.New(bridge.Deps{
-		MQTT:    broker,
-		Options: opts,
-		Log:     slog.New(slog.DiscardHandler),
-		Origin:  mqtt.Origin{Version: "test", SupportURL: "https://example.test"},
+		MQTT:     broker,
+		Options:  opts,
+		Log:      slog.New(slog.DiscardHandler),
+		Origin:   mqtt.Origin{Version: "test", SupportURL: "https://example.test"},
+		HTTPAddr: "127.0.0.1:0",
 	})
 	ctx, cancel := context.WithCancel(context.Background())
 	if err := b.Start(ctx); err != nil {
@@ -71,10 +72,11 @@ func startBridge(t *testing.T, srv *obstest.Server, broker *testutil.FakeMQTT) {
 	}
 	t.Cleanup(func() {
 		cancel()
-		stopCtx, stopCancel := context.WithTimeout(context.Background(), testTimeout)
+		stopCtx, stopCancel := context.WithTimeout(context.Background(), time.Second)
 		defer stopCancel()
 		b.Stop(stopCtx)
 	})
+	return b
 }
 
 func waitFor(t *testing.T, what string, cond func() bool) {
@@ -111,11 +113,13 @@ func TestBridgePublishesDiscoveryAndState(t *testing.T) {
 	if got := lastPayload(broker, "obs/test/transition_duration/state"); got != "300" {
 		t.Errorf("transition duration = %q", got)
 	}
-	if got := lastPayload(broker, "obs/test/screenshot"); got != "hello" {
-		t.Errorf("screenshot = %q", got)
-	}
-	if payload, ok := broker.Last("homeassistant/sensor/obs_test/cpu_usage/config"); !ok || len(payload) != 0 {
-		t.Errorf("retired sensor config = %q, %v; want cleared", payload, ok)
+	for _, retired := range []string{
+		"homeassistant/sensor/obs_test/cpu_usage/config",
+		"homeassistant/camera/obs_test/screenshot/config",
+	} {
+		if payload, ok := broker.Last(retired); !ok || len(payload) != 0 {
+			t.Errorf("retired config %s = %q, %v; want cleared", retired, payload, ok)
+		}
 	}
 
 	var discovery map[string]any

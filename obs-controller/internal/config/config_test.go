@@ -24,8 +24,8 @@ func TestParseOptionsDefaults(t *testing.T) {
 	if conn.Addr() != "192.168.1.50:4455" {
 		t.Errorf("Addr() = %q", conn.Addr())
 	}
-	if opts.ScreenshotActive != 2*time.Second || opts.ScreenshotIdle != 10*time.Second {
-		t.Errorf("screenshot intervals = %v/%v", opts.ScreenshotActive, opts.ScreenshotIdle)
+	if opts.ActivePollInterval != 125*time.Millisecond || opts.IdlePollInterval != 10*time.Second {
+		t.Errorf("poll intervals = %v/%v", opts.ActivePollInterval, opts.IdlePollInterval)
 	}
 	if opts.ScreenshotWidth != 640 || opts.ScreenshotQuality != 60 {
 		t.Errorf("screenshot params = %d/%d", opts.ScreenshotWidth, opts.ScreenshotQuality)
@@ -38,8 +38,8 @@ func TestParseOptionsDefaults(t *testing.T) {
 func TestParseOptionsExplicitValues(t *testing.T) {
 	data := `{
 		"connections": [{"name": "Studio", "id": "studio_rig", "host": "obs.local", "port": 4466, "password": "secret"}],
-		"screenshot_interval_active_seconds": 1,
-		"screenshot_interval_idle_seconds": 20,
+		"active_screenshot_polling_interval_ms": 100,
+		"idle_screenshot_polling_interval_ms": 20000,
 		"screenshot_width": 1280,
 		"screenshot_quality": 80,
 		"log_level": "debug"
@@ -52,8 +52,8 @@ func TestParseOptionsExplicitValues(t *testing.T) {
 	if conn.ID != "studio_rig" || conn.Port != 4466 || conn.Password != "secret" {
 		t.Errorf("connection = %+v", conn)
 	}
-	if opts.ScreenshotActive != time.Second {
-		t.Errorf("screenshot active = %v", opts.ScreenshotActive)
+	if opts.ActivePollInterval != 100*time.Millisecond || opts.IdlePollInterval != 20*time.Second {
+		t.Errorf("poll intervals = %v/%v", opts.ActivePollInterval, opts.IdlePollInterval)
 	}
 	if opts.ScreenshotWidth != 1280 || opts.ScreenshotQuality != 80 {
 		t.Errorf("screenshot params = %d/%d", opts.ScreenshotWidth, opts.ScreenshotQuality)
@@ -65,18 +65,19 @@ func TestParseOptionsExplicitValues(t *testing.T) {
 
 func TestParseOptionsRejections(t *testing.T) {
 	cases := map[string]string{
-		"no connections":    `{"connections": []}`,
-		"missing name":      `{"connections": [{"host": "h"}]}`,
-		"unsluggable name":  `{"connections": [{"name": "測試", "host": "h"}]}`,
-		"bad explicit id":   `{"connections": [{"name": "A", "id": "Main OBS", "host": "h"}]}`,
-		"missing host":      `{"connections": [{"name": "A"}]}`,
-		"bad port":          `{"connections": [{"name": "A", "host": "h", "port": 70000}]}`,
-		"duplicate ids":     `{"connections": [{"name": "Main OBS", "host": "h"}, {"name": "main-obs", "host": "i"}]}`,
-		"bad poll interval": minimalish(`"screenshot_interval_active_seconds": 0`),
-		"bad width":         minimalish(`"screenshot_width": 5000`),
-		"bad quality":       minimalish(`"screenshot_quality": 101`),
-		"bad log level":     minimalish(`"log_level": "verbose"`),
-		"not json":          `nope`,
+		"no connections":   `{"connections": []}`,
+		"missing name":     `{"connections": [{"host": "h"}]}`,
+		"unsluggable name": `{"connections": [{"name": "測試", "host": "h"}]}`,
+		"bad explicit id":  `{"connections": [{"name": "A", "id": "Main OBS", "host": "h"}]}`,
+		"missing host":     `{"connections": [{"name": "A"}]}`,
+		"bad port":         `{"connections": [{"name": "A", "host": "h", "port": 70000}]}`,
+		"duplicate ids":    `{"connections": [{"name": "Main OBS", "host": "h"}, {"name": "main-obs", "host": "i"}]}`,
+		"bad active poll":  minimalish(`"active_screenshot_polling_interval_ms": 10`),
+		"bad idle poll":    minimalish(`"idle_screenshot_polling_interval_ms": 100`),
+		"bad width":        minimalish(`"screenshot_width": 5000`),
+		"bad quality":      minimalish(`"screenshot_quality": 101`),
+		"bad log level":    minimalish(`"log_level": "verbose"`),
+		"not json":         `nope`,
 	}
 	for name, data := range cases {
 		if _, err := ParseOptions([]byte(data)); err == nil {

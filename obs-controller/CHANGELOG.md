@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.0.0
+
+- Live program preview over MJPEG: `http://<host>:9981/stream/<id>` streams the program scene as motion (plus `/snapshot/<id>` for a single still). Add it to Home Assistant via the MJPEG IP Camera integration.
+- Viewer-aware polling: OBS is asked for frames at `active_screenshot_polling_interval_ms` (default 125, the stream's frame rate) only while someone has the stream open, and at `idle_screenshot_polling_interval_ms` (default 10000) otherwise. These replace the old `screenshot_interval_*_seconds` options.
+- The MQTT camera entity is removed — the MJPEG stream replaces it; its retained discovery config is cleared automatically.
+
 ## 0.2.0
 
 - Connections are now configured with a required free-form `name` (used as the Home Assistant device name); `id` is optional and defaults to the slugified name. Port and password remain optional (port defaults to 4455).

@@ -16,12 +16,11 @@ Requires the **Mosquitto broker** add-on and the **MQTT integration**. Broker cr
 
 ```yaml
 connections:
-  - id: main_obs
+  - name: Main OBS
     host: 192.168.1.50
-    port: 4455
     password: secret
-screenshot_interval_active_seconds: 2
-screenshot_interval_idle_seconds: 10
+active_screenshot_polling_interval_ms: 125
+idle_screenshot_polling_interval_ms: 10000
 screenshot_width: 640
 screenshot_quality: 60
 log_level: info
@@ -35,9 +34,9 @@ log_level: info
 | `connections[].host` | required | Hostname or IP of the machine running OBS. |
 | `connections[].port` | `4455` | obs-websocket server port. |
 | `connections[].password` | none | obs-websocket password, if authentication is enabled. |
-| `screenshot_interval_active_seconds` | `2` | Program preview refresh while streaming or recording. |
-| `screenshot_interval_idle_seconds` | `10` | Program preview refresh otherwise. |
-| `screenshot_width` | `640` | Preview width in pixels; height follows the OBS canvas aspect ratio. OBS does the scaling. |
+| `active_screenshot_polling_interval_ms` | `125` | Capture rate while at least one MJPEG viewer is connected — this is the stream's frame rate (125 ≈ 8 fps, 100 = 10 fps). |
+| `idle_screenshot_polling_interval_ms` | `10000` | Capture rate with no viewers; keeps a fresh frame ready for `/snapshot` and an instant first frame. |
+| `screenshot_width` | `640` | Frame width in pixels; height follows the OBS canvas aspect ratio. OBS does the scaling. |
 | `screenshot_quality` | `60` | JPEG compression quality, 0–100. |
 | `log_level` | `info` | `debug` / `info` / `warn` / `error` |
 
@@ -56,13 +55,24 @@ Each connection is one device named **OBS `<id>`**:
 | Transition | select | |
 | Transition duration | number | Milliseconds; fixed transitions (Cut) ignore it. |
 | Trigger transition | button | Studio-mode transition (preview → program). |
-| Program | camera | Still of the current program scene, refreshed on the screenshot interval. |
 | Connected | binary sensor | OBS reachable from the add-on; stays available while OBS is down so automations can trigger on it. |
 | Last recording | sensor | File path of the most recently finished recording. |
 
+## Program preview (MJPEG)
+
+The add-on serves a live program preview over HTTP on port 9981:
+
+- `http://<ha-host>:9981/stream/<id>` — MJPEG stream (motion)
+- `http://<ha-host>:9981/snapshot/<id>` — single JPEG still
+
+Add it to Home Assistant once via **Settings → Devices & services → Add integration → MJPEG IP Camera** with the stream URL (MQTT discovery cannot create MJPEG cameras).
+
+The add-on only asks OBS for frames at the fast rate while someone is actually watching — an open stream connection is the signal. With no viewers it captures one frame every `idle_screenshot_polling_interval_ms`, kept warm for `/snapshot` and instant stream starts. OBS renders, scales and JPEG-encodes every frame; the add-on never touches pixels.
+
 ## Behaviour
 
-- State changes arrive as obs-websocket events and are published immediately; the only polling is the program preview screenshot on its active/idle interval.
+- State changes arrive as obs-websocket events and are published immediately; the only polling is the program preview capture described above.
+- A program scene switch pushes a frame to every viewer immediately, regardless of the polling interval.
 - When an OBS instance is unreachable its entities go unavailable in Home Assistant, and the add-on reconnects forever with exponential backoff (1–30 s). Commands received while disconnected are dropped and logged — never queued.
 - A wrong password is retried once a minute and logged as `obs_auth_failed`; fix the password in OBS's WebSocket Server Settings and the add-on recovers on its own. Config changes on the add-on side require a restart.
 - Retained MQTT messages on command topics are never acted on.

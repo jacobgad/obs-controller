@@ -4,7 +4,10 @@ package bridge
 
 import (
 	"context"
+	"errors"
 	"log/slog"
+	"net"
+	"net/http"
 	"sync"
 	"time"
 
@@ -18,15 +21,19 @@ type Deps struct {
 	Options config.Options
 	Log     *slog.Logger
 	Origin  mqtt.Origin
+	// HTTPAddr is the MJPEG server listen address; empty means ":9981".
+	HTTPAddr string
 }
 
 // Bridge runs one connection loop per configured OBS instance and routes MQTT
 // commands to them.
 type Bridge struct {
-	deps   Deps
-	conns  map[string]*connection
-	cancel context.CancelFunc
-	wg     sync.WaitGroup
+	deps       Deps
+	conns      map[string]*connection
+	cancel     context.CancelFunc
+	wg         sync.WaitGroup
+	httpServer *http.Server
+	listener   net.Listener
 }
 
 // New wires a Bridge; Start launches it.
@@ -55,6 +62,10 @@ func (b *Bridge) Start(ctx context.Context) error {
 		return err
 	}
 
+	if err := b.startHTTP(ctx); err != nil {
+		return err
+	}
+
 	runCtx, stop := context.WithCancel(context.WithoutCancel(ctx))
 	b.cancel = stop
 	for _, c := range b.conns {
@@ -65,6 +76,34 @@ func (b *Bridge) Start(ctx context.Context) error {
 		}(c)
 	}
 	return nil
+}
+
+func (b *Bridge) startHTTP(ctx context.Context) error {
+	addr := b.deps.HTTPAddr
+	if addr == "" {
+		addr = ":9981"
+	}
+	listener, err := new(net.ListenConfig).Listen(ctx, "tcp", addr)
+	if err != nil {
+		return err
+	}
+	b.listener = listener
+	b.httpServer = &http.Server{Handler: b.httpHandler(), ReadHeaderTimeout: 10 * time.Second}
+	go func() {
+		if err := b.httpServer.Serve(listener); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			b.deps.Log.Error("mjpeg_server_failed", "error", err.Error())
+		}
+	}()
+	b.deps.Log.Info("mjpeg_server_listening", "addr", listener.Addr().String())
+	return nil
+}
+
+// HTTPAddr is the MJPEG server's bound address.
+func (b *Bridge) HTTPAddr() string {
+	if b.listener == nil {
+		return ""
+	}
+	return b.listener.Addr().String()
 }
 
 // announce republishes bridge availability and per-connection state after each MQTT
@@ -98,6 +137,13 @@ func (b *Bridge) route(topic string, payload []byte) {
 func (b *Bridge) Stop(ctx context.Context) {
 	if b.cancel != nil {
 		b.cancel()
+	}
+	if b.httpServer != nil {
+		// Shutdown never finishes while MJPEG streams are open; the deadline, then
+		// Close, is what actually ends them.
+		if err := b.httpServer.Shutdown(ctx); err != nil {
+			_ = b.httpServer.Close()
+		}
 	}
 	done := make(chan struct{})
 	go func() {

@@ -13,13 +13,15 @@ import (
 )
 
 func (c *connection) pub(ctx context.Context, topic, payload string) {
-	c.pubBytes(ctx, topic, []byte(payload), true)
+	c.pubBytes(ctx, topic, []byte(payload))
 }
 
-func (c *connection) pubBytes(ctx context.Context, topic string, payload []byte, retain bool) {
+// pubBytes publishes retained: every remaining topic is state Home Assistant must see
+// after a restart.
+func (c *connection) pubBytes(ctx context.Context, topic string, payload []byte) {
 	ctx, cancel := context.WithTimeout(ctx, publishTimeout)
 	defer cancel()
-	err := c.broker.Publish(ctx, topic, payload, retain)
+	err := c.broker.Publish(ctx, topic, payload, true)
 	if err != nil && !errors.Is(err, mqtt.ErrNotConnected) {
 		c.log.Warn("mqtt_publish_failed", "topic", topic, "error", err.Error())
 	}
@@ -44,7 +46,7 @@ func (c *connection) publishUp(ctx context.Context) {
 	st := c.snapshotState()
 	info := c.deviceInfo()
 	for _, msg := range mqtt.DeviceMessages(info, st.scenes, st.transitions, c.origin) {
-		c.pubBytes(ctx, msg.Topic, msg.JSON(), true)
+		c.pubBytes(ctx, msg.Topic, msg.JSON())
 	}
 	c.pub(ctx, c.topics.Availability, mqtt.PayloadOnline)
 	c.pub(ctx, c.topics.ConnectedState, mqtt.PayloadOn)
@@ -57,9 +59,9 @@ func (c *connection) publishUp(ctx context.Context) {
 	c.pub(ctx, c.topics.TransitionState, st.transition)
 	c.pub(ctx, c.topics.TransitionDurationState, strconv.Itoa(st.durationMs))
 	for _, topic := range mqtt.RetiredDiscoveryTopics(c.cfg.ID) {
-		c.pubBytes(ctx, topic, nil, true)
+		c.pubBytes(ctx, topic, nil)
 	}
-	c.publishScreenshot(ctx)
+	c.capture(ctx)
 }
 
 func (c *connection) publishDown(ctx context.Context) {
@@ -70,17 +72,17 @@ func (c *connection) publishDown(ctx context.Context) {
 func (c *connection) publishSceneSelects(ctx context.Context) {
 	st := c.snapshotState()
 	for _, msg := range mqtt.SceneSelectMessages(c.deviceInfo(), st.scenes, c.origin) {
-		c.pubBytes(ctx, msg.Topic, msg.JSON(), true)
+		c.pubBytes(ctx, msg.Topic, msg.JSON())
 	}
 }
 
 func (c *connection) publishTransitionSelect(ctx context.Context) {
 	st := c.snapshotState()
 	msg := mqtt.TransitionSelectMessage(c.deviceInfo(), st.transitions, c.origin)
-	c.pubBytes(ctx, msg.Topic, msg.JSON(), true)
+	c.pubBytes(ctx, msg.Topic, msg.JSON())
 }
 
-func (c *connection) publishScreenshot(ctx context.Context) {
+func (c *connection) capture(ctx context.Context) {
 	client := c.snapshotClient()
 	st := c.snapshotState()
 	if client == nil || st.programScene == "" || st.canvasWidth <= 0 || st.canvasHeight <= 0 {
@@ -108,7 +110,26 @@ func (c *connection) publishScreenshot(ctx context.Context) {
 		c.log.Warn("screenshot_decode_failed", "error", err.Error())
 		return
 	}
-	c.pubBytes(ctx, c.topics.Screenshot, data, false)
+
+	c.frameMu.Lock()
+	c.latest = data
+	for ch := range c.subs {
+		// Latest-wins delivery: a slow viewer drops stale frames rather than
+		// stalling capture for everyone.
+		select {
+		case ch <- data:
+		default:
+			select {
+			case <-ch:
+			default:
+			}
+			select {
+			case ch <- data:
+			default:
+			}
+		}
+	}
+	c.frameMu.Unlock()
 }
 
 func clamp(v, lo, hi float64) float64 {

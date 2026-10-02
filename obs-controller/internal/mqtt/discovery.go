@@ -117,10 +117,6 @@ func entities() []entity {
 					"qos":           1,
 				}
 			}},
-		{component: "camera", object: "screenshot", name: "Program",
-			fields: func(t DeviceTopics, _ []string) map[string]any {
-				return map[string]any{"topic": t.Screenshot}
-			}},
 		{component: "binary_sensor", object: "connected", name: "Connected", category: "diagnostic",
 			bridgeOnly: true,
 			fields: func(t DeviceTopics, _ []string) map[string]any {
@@ -138,18 +134,21 @@ func entities() []entity {
 	}
 }
 
-// retiredSensors are sensor entities earlier releases published; their retained
-// discovery configs are cleared so stale entities never linger in Home Assistant.
-var retiredSensors = []string{
-	"stream_duration", "stream_congestion", "stream_dropped_pct", "record_duration",
-	"cpu_usage", "memory_usage", "active_fps", "render_lag_pct", "encode_lag_pct", "free_disk_space",
+// retiredEntities were published by earlier releases; their retained discovery
+// configs are cleared so stale entities never linger in Home Assistant.
+var retiredEntities = []struct{ component, object string }{
+	{"sensor", "stream_duration"}, {"sensor", "stream_congestion"}, {"sensor", "stream_dropped_pct"},
+	{"sensor", "record_duration"}, {"sensor", "cpu_usage"}, {"sensor", "memory_usage"},
+	{"sensor", "active_fps"}, {"sensor", "render_lag_pct"}, {"sensor", "encode_lag_pct"},
+	{"sensor", "free_disk_space"},
+	{"camera", "screenshot"},
 }
 
 // RetiredDiscoveryTopics lists config topics to clear for one connection id.
 func RetiredDiscoveryTopics(id string) []string {
-	topics := make([]string, 0, len(retiredSensors))
-	for _, object := range retiredSensors {
-		topics = append(topics, HADiscoveryTopic("sensor", DeviceNodeID(id), object))
+	topics := make([]string, 0, len(retiredEntities))
+	for _, e := range retiredEntities {
+		topics = append(topics, HADiscoveryTopic(e.component, DeviceNodeID(id), e.object))
 	}
 	return topics
 }

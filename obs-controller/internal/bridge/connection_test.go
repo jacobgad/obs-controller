@@ -48,15 +48,6 @@ func TestWSMajorVersion(t *testing.T) {
 	}
 }
 
-func TestInterval(t *testing.T) {
-	if interval(true, time.Second, time.Minute) != time.Second {
-		t.Error("active interval not used")
-	}
-	if interval(false, time.Second, time.Minute) != time.Minute {
-		t.Error("idle interval not used")
-	}
-}
-
 func TestJitterStaysBounded(t *testing.T) {
 	base := 10 * time.Second
 	for range 100 {

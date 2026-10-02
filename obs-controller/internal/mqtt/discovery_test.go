@@ -73,9 +73,18 @@ func TestSelectOptionsAndAvailability(t *testing.T) {
 		t.Errorf("stream availability_mode = %v", stream["availability_mode"])
 	}
 
-	camera := byObject["screenshot"]
-	if camera["topic"] != "obs/main_obs/screenshot" {
-		t.Errorf("camera topic = %v", camera["topic"])
+	if _, exists := byObject["screenshot"]; exists {
+		t.Error("camera entity should no longer be published")
+	}
+	retired := RetiredDiscoveryTopics("main_obs")
+	found := false
+	for _, topic := range retired {
+		if topic == "homeassistant/camera/obs_main_obs/screenshot/config" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("camera config missing from retired topics: %v", retired)
 	}
 }
 

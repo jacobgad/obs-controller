@@ -41,7 +41,6 @@ type DeviceTopics struct {
 	TransitionDurationState string
 	TransitionDurationSet   string
 	TriggerTransitionPress  string
-	Screenshot              string
 	base                    string
 }
 
@@ -68,7 +67,6 @@ func ForDevice(id string) DeviceTopics {
 		TransitionDurationState: base + "/transition_duration/state",
 		TransitionDurationSet:   base + "/transition_duration/set",
 		TriggerTransitionPress:  base + "/trigger_transition/press",
-		Screenshot:              base + "/screenshot",
 		base:                    base,
 	}
 }

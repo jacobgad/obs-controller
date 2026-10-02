@@ -53,20 +53,29 @@ type connection struct {
 	mu     sync.Mutex
 	client *obs.Client
 	st     obsState
+
+	frameMu    sync.Mutex
+	subs       map[chan []byte]struct{}
+	subsClosed bool
+	latest     []byte
+	viewerCh   chan struct{}
 }
 
 func newConnection(cfg config.Connection, deps Deps) *connection {
 	return &connection{
-		cfg:    cfg,
-		opts:   deps.Options,
-		broker: deps.MQTT,
-		log:    deps.Log.With("connection", cfg.ID),
-		origin: deps.Origin,
-		topics: mqtt.ForDevice(cfg.ID),
+		cfg:      cfg,
+		opts:     deps.Options,
+		broker:   deps.MQTT,
+		log:      deps.Log.With("connection", cfg.ID),
+		origin:   deps.Origin,
+		topics:   mqtt.ForDevice(cfg.ID),
+		subs:     make(map[chan []byte]struct{}),
+		viewerCh: make(chan struct{}, 1),
 	}
 }
 
 func (c *connection) run(ctx context.Context) {
+	defer c.closeSubs()
 	c.publishDown(ctx)
 	backoff := initialBackoff
 	for ctx.Err() == nil {
@@ -176,9 +185,8 @@ func (c *connection) onUp(ctx context.Context, client *obs.Client) error {
 }
 
 func (c *connection) loop(ctx context.Context, client *obs.Client) {
-	ticker := time.NewTicker(time.Second)
-	defer ticker.Stop()
-	lastShot := time.Now()
+	timer := time.NewTimer(c.captureInterval())
+	defer timer.Stop()
 	for {
 		select {
 		case <-ctx.Done():
@@ -189,13 +197,75 @@ func (c *connection) loop(ctx context.Context, client *obs.Client) {
 				return
 			}
 			c.handleEvent(ctx, ev)
-		case now := <-ticker.C:
-			if now.Sub(lastShot) >= interval(c.active(), c.opts.ScreenshotActive, c.opts.ScreenshotIdle) {
-				lastShot = now
-				c.publishScreenshot(ctx)
-			}
+			continue
+		case <-c.viewerCh:
+		case <-timer.C:
 		}
+		c.capture(ctx)
+		timer.Reset(c.captureInterval())
 	}
+}
+
+func (c *connection) captureInterval() time.Duration {
+	c.frameMu.Lock()
+	defer c.frameMu.Unlock()
+	if len(c.subs) > 0 {
+		return c.opts.ActivePollInterval
+	}
+	return c.opts.IdlePollInterval
+}
+
+// A viewer's presence is what switches capture to the active rate.
+func (c *connection) subscribe() chan []byte {
+	ch := make(chan []byte, 1)
+	c.frameMu.Lock()
+	if c.subsClosed {
+		c.frameMu.Unlock()
+		close(ch)
+		return ch
+	}
+	c.subs[ch] = struct{}{}
+	viewers := len(c.subs)
+	if c.latest != nil {
+		ch <- c.latest
+	}
+	c.frameMu.Unlock()
+	select {
+	case c.viewerCh <- struct{}{}:
+	default:
+	}
+	c.log.Info("mjpeg_viewer_connected", "viewers", viewers)
+	return ch
+}
+
+func (c *connection) unsubscribe(ch chan []byte) {
+	c.frameMu.Lock()
+	if _, ok := c.subs[ch]; !ok {
+		c.frameMu.Unlock()
+		return
+	}
+	delete(c.subs, ch)
+	viewers := len(c.subs)
+	c.frameMu.Unlock()
+	c.log.Info("mjpeg_viewer_disconnected", "viewers", viewers)
+}
+
+// closeSubs ends every open MJPEG stream at shutdown, so HTTP Shutdown does not sit
+// on its full deadline waiting for streams that never finish on their own.
+func (c *connection) closeSubs() {
+	c.frameMu.Lock()
+	defer c.frameMu.Unlock()
+	c.subsClosed = true
+	for ch := range c.subs {
+		close(ch)
+	}
+	c.subs = map[chan []byte]struct{}{}
+}
+
+func (c *connection) latestFrame() []byte {
+	c.frameMu.Lock()
+	defer c.frameMu.Unlock()
+	return c.latest
 }
 
 func (c *connection) onDown(ctx context.Context) {
@@ -216,7 +286,7 @@ func (c *connection) handleEvent(ctx context.Context, ev any) {
 	case *obs.CurrentProgramSceneChanged:
 		c.update(func(st *obsState) { st.programScene = e.SceneName })
 		c.pub(ctx, c.topics.ProgramSceneState, e.SceneName)
-		c.publishScreenshot(ctx)
+		c.capture(ctx)
 	case *obs.CurrentPreviewSceneChanged:
 		c.update(func(st *obsState) { st.previewScene = e.SceneName })
 		c.pub(ctx, c.topics.PreviewSceneState, e.SceneName)
@@ -322,19 +392,6 @@ func (c *connection) snapshotClient() *obs.Client {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return c.client
-}
-
-func (c *connection) active() bool {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return c.st.streaming || c.st.recording
-}
-
-func interval(active bool, activeInterval, idleInterval time.Duration) time.Duration {
-	if active {
-		return activeInterval
-	}
-	return idleInterval
 }
 
 func sceneNames(scenes []obs.Scene) []string {
